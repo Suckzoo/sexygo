@@ -1,6 +1,7 @@
 package sexy.mycodeis.suckzoo.sexygo
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Build
@@ -8,6 +9,7 @@ import android.os.Bundle
 import android.support.v4.app.FragmentActivity
 import android.support.v4.content.ContextCompat
 import android.util.Log
+import com.github.kittinunf.fuel.core.Response
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.api.GoogleApiClient
 import com.google.android.gms.common.api.GoogleApiClient.ConnectionCallbacks
@@ -19,24 +21,30 @@ import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.SupportMapFragment
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
-import io.reactivex.Observable
-import io.reactivex.disposables.Disposable
+import rx.Observable
+import rx.Subscription
 import kotlinx.android.synthetic.main.activity_maps.*
-import okhttp3.ResponseBody
-import retrofit2.Retrofit
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 
 class MapsActivity : FragmentActivity(),
         OnMapReadyCallback,
         ConnectionCallbacks,
         OnConnectionFailedListener,
+        GoogleMap.OnMarkerClickListener,
         LocationListener {
+
+    lateinit var mService: KaistGoService
+
+    private lateinit var mMarkerMap: MarkerMap
 
     private var mMap: GoogleMap? = null
     lateinit var mapsFragment: SupportMapFragment
 
-    private var subscription: Disposable? = null
+    private var subscription: Subscription? = null
     lateinit var mGoogleApiClient: GoogleApiClient
     lateinit var mLocationRequest: LocationRequest
     lateinit var mLocationSettingsRequest: LocationSettingsRequest
@@ -83,6 +91,9 @@ class MapsActivity : FragmentActivity(),
         this.setContentView(R.layout.activity_maps)
         checkPermission()
 
+        mService = KaistGoService(resources.getString(R.string.base_url))
+        mMarkerMap = MarkerMap(this)
+
         mapsFragment = map as SupportMapFragment
         // Obtain the SupportMapFragment and get notified when the map is ready to be used.
         mapsFragment.getMapAsync(this)
@@ -92,13 +103,6 @@ class MapsActivity : FragmentActivity(),
     }
 
     fun subscribe() {
-        val base_url = resources.getString(R.string.base_url)
-        val service = Retrofit.Builder()
-                .baseUrl(base_url)
-                .build()
-                .create(KaistGoService::class.java)
-        Log.wtf("subscribe", "now subscribes!")
-
         subscription = Observable.interval(1, TimeUnit.SECONDS)
                 .switchMap {
                     Log.wtf("firstSwitchMap", "emitted!")
@@ -106,28 +110,33 @@ class MapsActivity : FragmentActivity(),
                         val latitude = it.latitude
                         val longitude = it.longitude
                         Log.wtf("firstSwitchMap", "$latitude, $longitude")
-                        service.search(latitude, longitude)
+                        mService.search(latitude, longitude)
                     }
                 }
-                .switchMap {
-                    Log.wtf("secondSwitchMap", "emitted!")
-                    if (!it.isRedirect) {
-                        throw KaistGoNotFoundException()
+                .map {
+                    val response: Response = it.first
+                    when (response.httpStatusCode) {
+                        302 -> {
+                            Log.wtf("http", "redirection")
+                            val location = response.httpResponseHeaders["Location"]!![0]
+                            mMarkerMap.addMarker(mCurrentLocation!!.latitude,
+                                    mCurrentLocation!!.longitude,
+                                    location)
+                        }
+                        else -> {
+                            Log.wtf("http", "error..?" + response.httpStatusCode)
+                        }
                     }
-                    val location = it.header("Location")
-                    service.fetch(location)
                 }
-                .map(ResponseBody::contentType)
                 .retry()
                 .subscribe {
-                    Log.wtf("subscription", "$it")
                 }
     }
 
     fun unsubscribe() {
         subscription?.let {
             Log.wtf("unsubscribe", "Disposing...")
-            if (!it.isDisposed) it.dispose()
+            if (!it.isUnsubscribed) it.unsubscribe()
         }
     }
 
@@ -173,10 +182,51 @@ class MapsActivity : FragmentActivity(),
         mMap = googleMap
 
         // Add a marker in Sydney and move the camera
-        val sydney = LatLng(-34.0, 151.0)
-        mMap!!.addMarker(MarkerOptions().position(sydney).title("Marker in Sydney"))
+        // val sydney = LatLng(-34.0, 151.0)
+        // mMap!!.addMarker(MarkerOptions().position(sydney).title("Marker in Sydney"))
         mMap!!.moveCamera(CameraUpdateFactory.zoomBy(5F))
         mMap!!.isMyLocationEnabled = true
+        mMap!!.setOnMarkerClickListener(this)
+    }
+
+    fun addMarker(lat: Double, lng: Double, title: String) {
+        Log.wtf("addMarker", "adding marker to $lat, $lng")
+        val coord = LatLng(lat, lng)
+        mMap!!.addMarker(MarkerOptions().position(coord).title(title))
+    }
+
+    override fun onMarkerClick(marker: Marker?): Boolean {
+        Log.wtf("onMarkerClick", "marker clicked")
+        marker?.let {
+            Log.wtf("onMarkerClick", "marker is not null")
+            val url = it.title
+            mMarkerMap.fetchPayloadFromMarker(url)
+                    .map {
+                        Log.wtf("onMarkerClick", "fetched payload")
+
+                        var intent = Intent(this, VisualizeActivity::class.java)
+
+                        val contentType = it.first
+                        var payload = it.second
+                        intent.putExtra("contentType", contentType)
+                        if (contentType != "video/mp4") {
+                            intent.putExtra("payload", payload)
+                        } else {
+                            val file = File(this.filesDir, "sexy_video.mp4")
+                            val path = file.path
+                            val out = FileOutputStream(file)
+                            intent.putExtra("filePath", path)
+                            out.write(payload)
+                            out.close()
+                        }
+                        startActivity(intent)
+                    }
+                    .subscribe {
+
+                    }
+            return true
+        }
+        return false
     }
 
     /**

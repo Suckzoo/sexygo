@@ -1,5 +1,5 @@
 <resources>
     <string name="app_name">sexygo</string>
     <string name="title_activity_maps">Sexygo</string>
-    <string name="base_url">http://emma.kaist.ac.kr:1442/</string>
+    <string name="base_url">http://emma.kaist.ac.kr:1442</string>
 </resources>
